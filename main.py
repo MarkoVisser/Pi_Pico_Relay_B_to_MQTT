@@ -83,15 +83,13 @@ def activate_wlan():
     max_wait = 10
     while max_wait > 0:
         if wlan.status() < 0 or wlan.status() >= 3:
-            np[0] = (0, 20, 0) # set LED to GREEN on successful wifi connection
-            np.write()
             break
         max_wait -= 1
         print('Waiting for ' + WLAN_SSID)
         time.sleep(1)
 
     if wlan.status() != 3:
-        np[0] = (20, 0, 0)  # set LED to RED on unable to connect to wifi
+        np[0] = (20, 0, 0)  # set LED to RED if unable to connect to wifi
         np.write()
         raise RuntimeError('Unable to connect to ' + WLAN_SSID)
     else:
@@ -102,7 +100,7 @@ def activate_wlan():
         np.write()
 
 def msg_in(topic, msg):
-  np[0] = (0, 0, 20) # set LED to BLUE for MQTT message received
+  np[0] = (0, 0, 20) # set LED to BLUE when MQTT message received
   np.write()
   target = int(topic[-1:])
   mode = int(msg)
@@ -129,7 +127,7 @@ def setup_mqtt():
   return mqtt_client
 
 def re_initialise():
-  np[0] = (20, 0, 0) #set LED to red for problem
+  np[0] = (20, 0, 0) #set LED to red for connection problem
   np.write()
   print('Error connecting to broker, retrying..')
   time.sleep(5)
