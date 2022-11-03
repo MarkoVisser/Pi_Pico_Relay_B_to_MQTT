@@ -35,7 +35,6 @@ relays[8] = {  "relay": Pin(14, Pin.OUT),
               "switch": Pin(4,  Pin.IN)  }
 
 #set onboard led and buzzer pins
-#led = Pin(13, Pin.OUT, value=0)
 np = neopixel.NeoPixel(machine.Pin(13), 1)
 buz = Pin(6, Pin.OUT)
 
@@ -44,7 +43,7 @@ np[0] = (50, 0, 50)
 np.write()
 
 #change to your country code as applicable
-rp2.country('ZA')
+rp2.country('GB')
 
 #MQTT server details
 MQTT_BROKER = secrets["MQTT_BROKER"]
