@@ -3,13 +3,18 @@ import network
 import machine
 import ubinascii
 import time
+import neopixel
 from secrets import secrets
 from umqtt.simple import MQTTClient
-from machine import Pin
+from machine import Pin, PWM
+
 
 #define and store relay and switch pin assignments
 #switch pins can be altered but refer to relay documentation for availablility
 #DO NOT CHANGE THE RELAY PINS
+
+pwm = PWM(Pin(6))
+pwm.freq(1000)
 
 relays = {}
 relays[1] = {  "relay": Pin(21, Pin.OUT), 
@@ -30,11 +35,16 @@ relays[8] = {  "relay": Pin(14, Pin.OUT),
               "switch": Pin(4,  Pin.IN)  }
 
 #set onboard led and buzzer pins
-led = Pin(13, Pin.OUT, value=0)
+#led = Pin(13, Pin.OUT, value=0)
+np = neopixel.NeoPixel(machine.Pin(13), 1)
 buz = Pin(6, Pin.OUT)
 
+# set LED to PINK
+np[0] = (50, 0, 50)
+np.write()
+
 #change to your country code as applicable
-rp2.country('GB')
+rp2.country('ZA')
 
 #MQTT server details
 MQTT_BROKER = secrets["MQTT_BROKER"]
@@ -65,27 +75,36 @@ ka_threshold = 30 #status update interval (10 = 1 second)
 wlan = network.WLAN(network.STA_IF)
 
 def activate_wlan():
+    np[0] = (50, 0, 50) # set LED to PINK when activating wifi
+    np.write()
     #activates WLAN connection
     wlan.active(True)
     wlan.config(pm = 0xa11140) # Disable power-save mode
     wlan.connect(WLAN_SSID, WLAN_PWD)
-
     max_wait = 10
     while max_wait > 0:
         if wlan.status() < 0 or wlan.status() >= 3:
+            np[0] = (0, 20, 0) # set LED to GREEN on successful wifi connection
+            np.write()
             break
         max_wait -= 1
         print('Waiting for ' + WLAN_SSID)
         time.sleep(1)
 
     if wlan.status() != 3:
+        np[0] = (20, 0, 0)  # set LED to RED on unable to connect to wifi
+        np.write()
         raise RuntimeError('Unable to connect to ' + WLAN_SSID)
     else:
         print('connected')
         status = wlan.ifconfig()
         print('ip = ' + status[0])
+        np[0] = (0, 20, 0)
+        np.write()
 
 def msg_in(topic, msg):
+  np[0] = (0, 0, 20) # set LED to BLUE for MQTT message received
+  np.write()
   target = int(topic[-1:])
   mode = int(msg)
 
@@ -111,6 +130,8 @@ def setup_mqtt():
   return mqtt_client
 
 def re_initialise():
+  np[0] = (20, 0, 0) #set LED to red for problem
+  np.write()
   print('Error connecting to broker, retrying..')
   time.sleep(5)
   machine.reset()
@@ -133,6 +154,8 @@ def update_relay_states(mqtt_client):
 def update_state():
   MQTT_MSG = 'online'
   mqtt_client.publish(MQTT_STATUS_TOPIC, MQTT_MSG)
+  np[0] = (30, 30, 30) #set LED to blink white for MQTT update sent
+  np.write()
 
 #activate WiFi connection
 activate_wlan()
@@ -168,6 +191,8 @@ while True:
 
     #wait before looping again
     time.sleep(0.1)
+    np[0] = (0, 10, 0) #set LED to green for normal operation
+    np.write()
 
   except OSError as e:
     re_initialise()
