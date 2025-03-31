@@ -8,188 +8,209 @@ from secrets import secrets
 from umqtt.simple import MQTTClient
 from machine import Pin, PWM
 
+# Configuration constants
+CONFIG = {
+    'KA_THRESHOLD': 30,  # Keepalive interval (10 = 1 second)
+    'WIFI_TIMEOUT': 15,  # Seconds to wait for WiFi connection
+    'DEBOUNCE_MS': 200,  # Switch debounce time in milliseconds
+    'LED_COLORS': {
+        'BOOT': (50, 0, 50),    # Pink
+        'ERROR': (20, 0, 0),    # Red
+        'NORMAL': (0, 10, 0),   # Green
+        'MQTT_RX': (0, 0, 20),  # Blue
+        'STATUS': (30, 30, 30)  # White
+    }
+}
 
-#define and store relay and switch pin assignments
-#switch pins can be altered but refer to relay documentation for availablility
-#DO NOT CHANGE THE RELAY PINS
+# Relay and switch pin assignments (DO NOT CHANGE RELAY PINS)
+relays = {
+    1: {"relay": Pin(21, Pin.OUT), "switch": Pin(12, Pin.IN), "last_state": None, "last_change": 0},
+    2: {"relay": Pin(20, Pin.OUT), "switch": Pin(11, Pin.IN), "last_state": None, "last_change": 0},
+    3: {"relay": Pin(19, Pin.OUT), "switch": Pin(10, Pin.IN), "last_state": None, "last_change": 0},
+    4: {"relay": Pin(18, Pin.OUT), "switch": Pin(9, Pin.IN), "last_state": None, "last_change": 0},
+    5: {"relay": Pin(17, Pin.OUT), "switch": Pin(8, Pin.IN), "last_state": None, "last_change": 0},
+    6: {"relay": Pin(16, Pin.OUT), "switch": Pin(7, Pin.IN), "last_state": None, "last_change": 0},
+    7: {"relay": Pin(15, Pin.OUT), "switch": Pin(5, Pin.IN), "last_state": None, "last_change": 0},
+    8: {"relay": Pin(14, Pin.OUT), "switch": Pin(4, Pin.IN), "last_state": None, "last_change": 0}
+}
 
+# Initialize hardware
 pwm = PWM(Pin(6))
 pwm.freq(1000)
-
-relays = {}
-relays[1] = {  "relay": Pin(21, Pin.OUT), 
-              "switch": Pin(12, Pin.IN) }
-relays[2] = {  "relay": Pin(20, Pin.OUT),  
-              "switch": Pin(11, Pin.IN) }
-relays[3] = {  "relay": Pin(19, Pin.OUT), 
-              "switch": Pin(10, Pin.IN)  }
-relays[4] = {  "relay": Pin(18, Pin.OUT), 
-              "switch": Pin(9,  Pin.IN)  }
-relays[5] = {  "relay": Pin(17, Pin.OUT), 
-              "switch": Pin(8,  Pin.IN)  }
-relays[6] = {  "relay": Pin(16, Pin.OUT), 
-              "switch": Pin(7,  Pin.IN)  }
-relays[7] = {  "relay": Pin(15, Pin.OUT), 
-              "switch": Pin(5,  Pin.IN)  }
-relays[8] = {  "relay": Pin(14, Pin.OUT), 
-              "switch": Pin(4,  Pin.IN)  }
-
-#set onboard led and buzzer pins
 np = neopixel.NeoPixel(machine.Pin(13), 1)
 buz = Pin(6, Pin.OUT)
 
-# set LED to PINK
-np[0] = (50, 0, 50)
-np.write()
-
-#change to your country code as applicable
-rp2.country('GB')
-
-#MQTT server details
+# MQTT and device settings
 MQTT_BROKER = secrets["MQTT_BROKER"]
-MQTT_USER   = secrets["MQTT_USER"]
-MQTT_PWD    = secrets["MQTT_PWD"]
-MQTT_PORT   = secrets["MQTT_PORT"]
-
-#MQTT topic details
-MQTT_DEVICE_NAME   = secrets["MQTT_DEVICE_NAME"]
-MQTT_DEVICE_ID     = "0x00" + ubinascii.hexlify(machine.unique_id()).decode()
-MQTT_BASE          = MQTT_DEVICE_NAME + "/"
+MQTT_USER = secrets["MQTT_USER"]
+MQTT_PWD = secrets["MQTT_PWD"]
+MQTT_PORT = secrets["MQTT_PORT"]
+MQTT_DEVICE_NAME = secrets["MQTT_DEVICE_NAME"]
+MQTT_DEVICE_ID = "0x00" + ubinascii.hexlify(machine.unique_id()).decode()
+MQTT_BASE = MQTT_DEVICE_NAME + "/"
 MQTT_COMMAND_TOPIC = MQTT_BASE + "command/relay/#"
-MQTT_STATUS_TOPIC  = MQTT_BASE + "status"
-MQTT_DISC_TOPIC    = "homeassistant/switch/" + MQTT_DEVICE_ID
+MQTT_STATUS_TOPIC = MQTT_BASE + "status"
+MQTT_DISC_TOPIC = "homeassistant/switch/" + MQTT_DEVICE_ID
 
-#Device details
-DEV_INFO_MANUFACTURER = "Waveshare"
-DEV_INFO_MODEL        = "Pico Relay B"
+DEV_INFO = {
+    "MANUFACTURER": "Waveshare",
+    "MODEL": "Pico Relay B"
+}
 
-#WiFi credentials
 WLAN_SSID = secrets["WLAN_SSID"]
-WLAN_PWD  = secrets["WLAN_PWD"]
-
-#keepalive timer
-ka_count = 0
-ka_threshold = 30 #status update interval (10 = 1 second)
+WLAN_PWD = secrets["WLAN_PWD"]
 
 wlan = network.WLAN(network.STA_IF)
+mqtt_client = None
+
+def set_led(state):
+    """Set LED color based on state"""
+    np[0] = CONFIG['LED_COLORS'][state]
+    np.write()
 
 def activate_wlan():
-    np[0] = (50, 0, 50) # set LED to PINK when activating wifi
-    np.write()
-    #activates WLAN connection
+    """Connect to WiFi with timeout"""
+    set_led('BOOT')
     wlan.active(True)
-    wlan.config(pm = 0xa11140) # Disable power-save mode
+    wlan.config(pm=0xa11140)  # Disable power-save mode
     wlan.connect(WLAN_SSID, WLAN_PWD)
-    max_wait = 10
-    while max_wait > 0:
-        if wlan.status() < 0 or wlan.status() >= 3:
-            break
-        max_wait -= 1
-        print('Waiting for ' + WLAN_SSID)
-        time.sleep(1)
-
-    if wlan.status() != 3:
-        np[0] = (20, 0, 0)  # set LED to RED if unable to connect to wifi
-        np.write()
-        raise RuntimeError('Unable to connect to ' + WLAN_SSID)
-    else:
-        print('connected')
-        status = wlan.ifconfig()
-        print('ip = ' + status[0])
-        np[0] = (0, 20, 0)
-        np.write()
+    
+    start_time = time.time()
+    while time.time() - start_time < CONFIG['WIFI_TIMEOUT']:
+        if wlan.status() == network.STAT_GOT_IP:
+            print(f'Connected to {WLAN_SSID}, IP: {wlan.ifconfig()[0]}')
+            set_led('NORMAL')
+            return True
+        time.sleep(0.5)
+    
+    set_led('ERROR')
+    raise RuntimeError(f'Failed to connect to {WLAN_SSID} within {CONFIG["WIFI_TIMEOUT"]} seconds')
 
 def msg_in(topic, msg):
-  np[0] = (0, 0, 20) # set LED to BLUE when MQTT message received
-  np.write()
-  target = int(topic[-1:])
-  mode = int(msg)
+    """Handle incoming MQTT messages with validation"""
+    set_led('MQTT_RX')
+    try:
+        # Validate topic and extract relay number
+        relay_num = int(topic.decode().split('/')[-1])
+        if relay_num not in relays:
+            print(f"Invalid relay number: {relay_num}")
+            return
 
-  if mode == 1:
-    state = "ON"
-  elif mode == 0:
-    state = "OFF"
-  else:
-    state = "ERR"
+        # Validate message
+        mode = int(msg.decode())
+        if mode not in (0, 1):
+            print(f"Invalid command value: {mode}")
+            return
 
-  print("Channel " + str(target) + ": " + str(state))
-
-  #set target relay to requested mode
-  relays[target]["relay"](mode)
+        state = "ON" if mode == 1 else "OFF"
+        print(f"Channel {relay_num}: {state}")
+        relays[relay_num]["relay"].value(mode)
+        
+    except ValueError as e:
+        print(f"Message parsing error: {e}")
+    except Exception as e:
+        print(f"Unexpected error in msg_in: {e}")
+    finally:
+        set_led('NORMAL')
 
 def setup_mqtt():
-  mqtt_client = MQTTClient(MQTT_DEVICE_NAME, MQTT_BROKER, port=MQTT_PORT, user=MQTT_USER, password=MQTT_PWD, keepalive=10, ssl=False)
-  mqtt_client.set_callback(msg_in)
-  mqtt_client.set_last_will(MQTT_DEVICE_NAME + "/status", "offline", qos=0, retain=False)
-  mqtt_client.connect()
-  mqtt_client.subscribe(MQTT_COMMAND_TOPIC)
-  print('MQTT connection sucessful!')
-  return mqtt_client
+    """Initialize MQTT connection"""
+    client = MQTTClient(
+        MQTT_DEVICE_NAME,
+        MQTT_BROKER,
+        port=MQTT_PORT,
+        user=MQTT_USER,
+        password=MQTT_PWD,
+        keepalive=10,
+        ssl=False
+    )
+    client.set_callback(msg_in)
+    client.set_last_will(MQTT_STATUS_TOPIC, "offline", qos=0, retain=False)
+    client.connect()
+    client.subscribe(MQTT_COMMAND_TOPIC)
+    print('MQTT connection successful!')
+    return client
 
-def re_initialise():
-  np[0] = (20, 0, 0) #set LED to red for connection problem
-  np.write()
-  print('Error connecting to broker, retrying..')
-  time.sleep(5)
-  machine.reset()
+def check_switches():
+    """Check physical switches with debouncing"""
+    current_time = time.ticks_ms()
+    for relay_num, relay in relays.items():
+        switch_state = relay["switch"].value()
+        if time.ticks_diff(current_time, relay["last_change"]) > CONFIG['DEBOUNCE_MS']:
+            if switch_state != relay["last_state"]:
+                relay["relay"].value(switch_state)
+                relay["last_state"] = switch_state
+                relay["last_change"] = current_time
+                mqtt_client.publish(f"{MQTT_STATUS_TOPIC}/relay/{relay_num}", str(switch_state))
 
-def update_relay_states(mqtt_client):
-    for i in range(1,9):
-        len(relays[i])
-        if len(relays[i]) == 3:
-            if str(relays[i]['relay'].value()) != str(relays[i]['last_state']):
-                #state has changed, update mqtt
-                MQTT_MSG = MQTT_STATUS_TOPIC + '/relay/' + str(i)
-                mqtt_client.publish(MQTT_MSG,str(relays[i]['relay'].value()))
-                relays[i]['last_state'] = relays[i]["relay"].value()
-        else:
-            #first run, set last_state to current state & send mqtt update for all relays
-            MQTT_MSG = MQTT_STATUS_TOPIC + '/relay/' + str(i)
-            mqtt_client.publish(MQTT_MSG,str(relays[i]['relay'].value()))
-            relays[i]["last_state"] = relays[i]["relay"].value()
+def update_relay_states():
+    """Update relay states and publish changes"""
+    for i in range(1, 9):
+        current_state = relays[i]["relay"].value()
+        if relays[i]["last_state"] is None:
+            relays[i]["last_state"] = current_state
+            mqtt_client.publish(f"{MQTT_STATUS_TOPIC}/relay/{i}", str(current_state))
+        elif current_state != relays[i]["last_state"]:
+            mqtt_client.publish(f"{MQTT_STATUS_TOPIC}/relay/{i}", str(current_state))
+            relays[i]["last_state"] = current_state
 
-def update_state():
-  MQTT_MSG = 'online'
-  mqtt_client.publish(MQTT_STATUS_TOPIC, MQTT_MSG)
-  np[0] = (30, 30, 30) #set LED to blink white for MQTT update sent
-  np.write()
-
-#activate WiFi connection
-activate_wlan()
-
-#connect to MQTT broker
-try:
-  mqtt_client = setup_mqtt()
-except OSError as e:
-  re_initialise()
-
-#publish home assistant discovery topics
-for i in range(1,9):
-    MQTT_MSG = '{"availability": [{"topic": "' + MQTT_STATUS_TOPIC +'"}],"command_topic": "' + MQTT_DEVICE_NAME + '/command/relay/' + str(i) + '","device": {"identifiers": ["' + MQTT_DEVICE_NAME + '"], "manufacturer": "' + DEV_INFO_MANUFACTURER +'", "model": "' + DEV_INFO_MODEL + '", "name": "' + MQTT_DEVICE_NAME + '"}, "name": "' + MQTT_DEVICE_NAME + '_ch_' + str(i) + '", "payload_off": 0, "payload_on": 1, "state_topic": "'+ MQTT_DEVICE_NAME +'/status/relay/' + str(i) + '", "unique_id": "'+MQTT_DEVICE_ID + '_relay_' + str(i) + '_pico"}'
-    mqtt_client.publish(MQTT_DISC_TOPIC + '/switch_' + str(i) + '/config', MQTT_MSG, retain=True)
-
-#set initial statusa
-update_state()
-
-#main loop
-while True:
-  try:
-    #check for incoming commands
-    mqtt_client.check_msg()
-    
-    #check for changes and update state(s) if needed
-    update_relay_states(mqtt_client)
-    
-    #increment keepalive counter and send status update if threshold reached/breached
-    ka_count +=1
-    if ka_count >= ka_threshold:
-      update_state()
-      ka_count = 0
-
-    #wait before looping again
+def update_status():
+    """Publish online status"""
+    mqtt_client.publish(MQTT_STATUS_TOPIC, "online")
+    set_led('STATUS')
     time.sleep(0.1)
-    np[0] = (0, 10, 0) #set LED to green for normal operation
-    np.write()
+    set_led('NORMAL')
 
-  except OSError as e:
-    re_initialise()
+def cleanup():
+    """Clean up resources"""
+    if mqtt_client:
+        mqtt_client.disconnect()
+    wlan.active(False)
+    set_led('ERROR')
+
+def main():
+    global mqtt_client
+    ka_count = 0
+    
+    try:
+        # Initial setup
+        rp2.country('GB')
+        activate_wlan()
+        mqtt_client = setup_mqtt()
+        
+        # Publish Home Assistant discovery
+        for i in range(1, 9):
+            config_msg = (
+                f'{{"availability": [{{"topic": "{MQTT_STATUS_TOPIC}"}}],'
+                f'"command_topic": "{MQTT_DEVICE_NAME}/command/relay/{i}",'
+                f'"device": {{"identifiers": ["{MQTT_DEVICE_NAME}"], "manufacturer": "{DEV_INFO["MANUFACTURER"]}",'
+                f'"model": "{DEV_INFO["MODEL"]}", "name": "{MQTT_DEVICE_NAME}"}},'
+                f'"name": "{MQTT_DEVICE_NAME}_ch_{i}", "payload_off": 0, "payload_on": 1,'
+                f'"state_topic": "{MQTT_DEVICE_NAME}/status/relay/{i}",'
+                f'"unique_id": "{MQTT_DEVICE_ID}_relay_{i}_pico"}}'
+            )
+            mqtt_client.publish(f"{MQTT_DISC_TOPIC}/switch_{i}/config", config_msg, retain=True)
+        
+        update_status()
+        
+        # Main loop
+        while True:
+            mqtt_client.check_msg()
+            check_switches()
+            update_relay_states()
+            
+            ka_count += 1
+            if ka_count >= CONFIG['KA_THRESHOLD']:
+                update_status()
+                ka_count = 0
+                
+            time.sleep(0.1)
+            
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        cleanup()
+        time.sleep(5)
+        machine.reset()
+
+if __name__ == "__main__":
+    main()
